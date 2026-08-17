@@ -1,0 +1,15 @@
+{
+  "name": "subtitlecat-vi-worker",
+  "version": "2.0.0",
+  "description": "Stremio addon (Cloudflare Worker): tu dong tim + tu dong dich phu de Tieng Viet tu subtitlecat.com, fuzzy-match ten phim",
+  "type": "module",
+  "main": "src/worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "kv:create": "wrangler kv namespace create SUBCAT_KV"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

@@ -1,0 +1,19 @@
+name = "subtitlecat-vi"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = []
+
+# Sau khi chay: npx wrangler kv namespace create SUBCAT_KV
+# lenh tren se in ra 1 dong dang:
+#   { binding = "SUBCAT_KV", id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
+# copy ID do dan vao duoi day (thay YOUR_KV_ID_HERE).
+[[kv_namespaces]]
+binding = "SUBCAT_KV"
+id = "YOUR_KV_ID_HERE"
+
+[vars]
+# TTL cache (giay)
+DECISION_TTL_SECONDS = "43200"
+SUBTITLE_TTL_SECONDS = "2592000"
+# Nguong diem tuong dong toi thieu de chap nhan 1 trang subtitlecat la dung phim (0..1)
+MIN_MATCH_SCORE = "0.35"
