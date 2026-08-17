@@ -188,40 +188,69 @@ function extractSubtitlecatLinks(html) {
   return Array.from(links);
 }
 
-async function searchViaDuckDuckGo(query) {
-  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(
-    'site:subtitlecat.com ' + query
-  )}`;
-  const html = await fetchText(url);
-  if (!html) return [];
-  return extractSubtitlecatLinks(html);
+// Header rieng cho tung cong cu tim kiem de giong trinh duyet that hon,
+// giam kha nang bi chan/challenge khi goi tu IP Cloudflare Workers.
+const SEARCH_HEADERS = {
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9'
+};
+
+// Ghi lai chi tiet moi lan goi cong cu tim kiem: co loi khong, status, tim duoc bao nhieu link.
+// Dung cho ca luc chay that lan luc debug (/debug/subtitles).
+async function runSearchEngine(name, url, trace) {
+  const entry = { engine: name, url, status: null, error: null, found: 0 };
+  trace && trace.push(entry);
+  try {
+    const res = await fetch(url, { headers: { ...FETCH_HEADERS, ...SEARCH_HEADERS } });
+    entry.status = res.status;
+    if (!res.ok) return [];
+    const html = await res.text();
+    const links = extractSubtitlecatLinks(html);
+    entry.found = links.length;
+    return links;
+  } catch (e) {
+    entry.error = String(e && e.message ? e.message : e);
+    return [];
+  }
 }
 
-async function searchViaBing(query) {
+async function searchViaDuckDuckGoLite(query, trace) {
+  const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(
+    'site:subtitlecat.com ' + query
+  )}`;
+  return runSearchEngine('duckduckgo-lite', url, trace);
+}
+
+async function searchViaDuckDuckGoHtml(query, trace) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(
+    'site:subtitlecat.com ' + query
+  )}`;
+  return runSearchEngine('duckduckgo-html', url, trace);
+}
+
+async function searchViaBing(query, trace) {
   const url = `https://www.bing.com/search?q=${encodeURIComponent(
     'site:subtitlecat.com ' + query
   )}`;
-  const html = await fetchText(url);
-  if (!html) return [];
-  return extractSubtitlecatLinks(html);
+  return runSearchEngine('bing', url, trace);
 }
 
-async function collectCandidateUrls(queries, maxCandidates = 8) {
+// Thu lan luot nhieu nguon, gop ket qua lai. Khong dung som qua som de tang
+// co hoi tim duoc link ke ca khi 1-2 nguon bi chan.
+async function collectCandidateUrls(queries, maxCandidates = 8, trace = null) {
   const all = new Set();
+  const engines = [searchViaDuckDuckGoLite, searchViaDuckDuckGoHtml, searchViaBing];
+
   for (const q of queries) {
-    try {
-      const ddg = await searchViaDuckDuckGo(q);
-      ddg.forEach((u) => all.add(u));
-    } catch (e) {
-      /* bo qua, thu bing */
-    }
-    if (all.size < 3) {
+    for (const engine of engines) {
       try {
-        const bing = await searchViaBing(q);
-        bing.forEach((u) => all.add(u));
+        const links = await engine(q, trace);
+        links.forEach((u) => all.add(u));
       } catch (e) {
-        /* bo qua */
+        /* bo qua, thu nguon tiep theo */
       }
+      if (all.size >= maxCandidates) break;
     }
     if (all.size >= maxCandidates) break;
   }
@@ -264,16 +293,20 @@ async function fetchCandidateInfo(pageUrl) {
 }
 
 // Chon trang subtitlecat khop nhat voi ten phim/tap phim can tim
-async function findBestCandidate(type, meta, season, episode, minScore) {
+async function findBestCandidate(type, meta, season, episode, minScore, trace = null) {
   const queries = buildSearchQueries(type, meta, season, episode);
-  const candidateUrls = await collectCandidateUrls(queries);
+  const candidateUrls = await collectCandidateUrls(queries, 8, trace);
 
   let best = null;
   let bestScore = 0;
+  const candidateScores = [];
 
   for (const url of candidateUrls) {
     const info = await fetchCandidateInfo(url);
-    if (!info || !info.title) continue;
+    if (!info || !info.title) {
+      candidateScores.push({ url, title: null, score: 0, note: 'khong doc duoc trang' });
+      continue;
+    }
 
     const targetLabel =
       type === 'series' && season && episode
@@ -281,6 +314,7 @@ async function findBestCandidate(type, meta, season, episode, minScore) {
         : `${meta.name} ${meta.year || ''}`.trim();
 
     const score = scoreCandidate(info.title, targetLabel, season, episode);
+    candidateScores.push({ url, title: info.title, score });
 
     if (score > bestScore) {
       bestScore = score;
@@ -290,6 +324,8 @@ async function findBestCandidate(type, meta, season, episode, minScore) {
     // Da rat khop -> dung som, do bot request
     if (bestScore >= 0.85) break;
   }
+
+  if (trace) trace.candidateScores = candidateScores;
 
   if (best && bestScore >= minScore) {
     return { ...best, score: bestScore };
@@ -599,6 +635,66 @@ export default {
           }
         ]
       });
+    }
+
+    // Route debug: xem chi tiet tung buoc xu ly (Cinemeta, cac cong cu tim kiem,
+    // diem so tung ung vien, downloadMap...) ma khong can xem log Cloudflare.
+    // Vi du: /debug/subtitles?type=movie&id=tt0111161
+    if (pathname === '/debug/subtitles') {
+      const type = url.searchParams.get('type') === 'series' ? 'series' : 'movie';
+      const rawId = url.searchParams.get('id') || '';
+      const { imdbId, season, episode } = parseSubtitleIdParam(rawId);
+
+      const debugInfo = {
+        input: { type, rawId, imdbId, season, episode },
+        meta: null,
+        queries: [],
+        searchTrace: [],
+        candidateScores: [],
+        best: null,
+        result: null
+      };
+
+      if (!/^tt\d+/.test(imdbId)) {
+        debugInfo.error = 'id khong hop le, vi du dung: ?type=movie&id=tt0111161';
+        return json(debugInfo, 400);
+      }
+
+      const minScore = parseFloat(env.MIN_MATCH_SCORE || '0.35');
+      const meta = await getCinemetaMeta(type, imdbId);
+      debugInfo.meta = meta;
+
+      if (meta) {
+        debugInfo.queries = buildSearchQueries(type, meta, season, episode);
+        const trace = [];
+        const best = await findBestCandidate(type, meta, season, episode, minScore, trace);
+        debugInfo.searchTrace = trace;
+        debugInfo.candidateScores = trace.candidateScores || [];
+        debugInfo.best = best
+          ? {
+              pageUrl: best.pageUrl,
+              title: best.title,
+              score: best.score,
+              downloadMap: best.downloadMap
+            }
+          : null;
+      }
+
+      if (url.searchParams.get('nocache') === '1') {
+        await env.SUBCAT_KV.delete(decisionKey(type, imdbId, season, episode));
+      }
+
+      // Chay luon ham chinh (co dung cache) de xem ket qua cuoi cung addon se tra ve
+      debugInfo.result = await resolveVietnameseSubtitle(
+        env,
+        type,
+        imdbId,
+        season,
+        episode,
+        url.origin
+      );
+
+      return json(debugInfo);
     }
 
     // Phuc vu file .srt da duoc tu dong dich, luu trong KV
