@@ -9,7 +9,7 @@ compatibility_flags = []
 # copy ID do dan vao duoi day (thay YOUR_KV_ID_HERE).
 [[kv_namespaces]]
 binding = "SUBCAT_KV"
-id = "YOUR_KV_ID_HERE"
+id = "62b28852a41d4020a3edcaf5e0c49a78"
 
 [vars]
 # TTL cache (giay)
